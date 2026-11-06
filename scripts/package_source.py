@@ -29,18 +29,7 @@ def package(destination: Path, notebook: Path | None = None):
             files.append(path)
     for name in ("student_card", "assets", "tests", "scripts", "docs", ".github"):
         files.extend(path for path in (ROOT / name).rglob("*") if path.is_file() and "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"})
-    # Include a compact selection of actual evidence, never arbitrary validation inputs.
-    evidence = (
-        "validation/phase1-all-junit.xml", "validation/phase1-junit.xml",
-        "validation/phase1-source.zip", "validation/phase1-smoke/summary.json",
-        "validation/phase1-smoke/interface.png", "validation/phase2-junit.xml",
-        "validation/phase2-clean-junit.xml", "validation/phase2-clean-smoke/summary.json",
-        "validation/phase2-clean-smoke/interface.png",
-        "validation/windows-exe/release-verification.json", "validation/windows-exe/summary.json",
-        "validation/windows-exe/interface.png", "validation/windows-build.log",
-        "verification/pytest-junit.xml", "release/build-windows-x64.json",
-    )
-    files.extend(ROOT / relative for relative in evidence if (ROOT / relative).is_file())
+    # Historical reports belong to older APIs; do not ship them as current evidence.
     destination = destination.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
@@ -55,7 +44,10 @@ def package(destination: Path, notebook: Path | None = None):
         if not required.issubset(set(archive.namelist())):
             raise RuntimeError("Source archive is incomplete")
     with destination.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+        digest = digest.hexdigest()
     destination.with_suffix(".zip.sha256").write_text(f"{digest}  {destination.name}\n", encoding="utf-8")
     print(json.dumps({"archive": str(destination), "files": len(files), "bytes": destination.stat().st_size, "sha256": digest}, ensure_ascii=False))
     return destination

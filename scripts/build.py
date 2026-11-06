@@ -24,9 +24,8 @@ def collect_license_files(destination: Path) -> None:
     """Copy licenses shipped by runtime wheels; do not copy user data or fonts."""
     destination.mkdir(parents=True, exist_ok=True)
     distributions = [
-        "PySide6-Essentials", "shiboken6", "Pillow", "numpy", "opencv-python-headless",
-        "openpyxl", "et-xmlfile", "python-barcode", "img2pdf", "pikepdf", "lxml",
-        "pypdf", "packaging", "Deprecated", "wrapt", "PyInstaller",
+        "PySide6-Essentials", "shiboken6", "Pillow", "numpy", "opencv-python",
+        "openpyxl", "et-xmlfile", "python-barcode", "pypdf", "PyInstaller",
     ]
     versions = {}
     for name in distributions:
@@ -86,10 +85,22 @@ def validate_smoke(summary_file: Path) -> None:
     report = json.loads(summary_file.read_text(encoding="utf-8"))
     if report.get("passed") is not True:
         raise RuntimeError(f"Smoke check did not pass: {summary_file}")
+    if report.get("settings_restored") is not True:
+        raise RuntimeError(f"Smoke settings did not restore: {summary_file}")
     for operation in ("cards", "pdf", "crop"):
         result = report.get(operation, {})
         if result.get("failed") != 0 or result.get("success", 0) < 1 or result.get("cancelled"):
             raise RuntimeError(f"Smoke operation {operation} failed: {summary_file}")
+        if result.get("errors"):
+            raise RuntimeError(f"Smoke operation {operation} reported errors: {summary_file}")
+    if not Path(report.get("cards", {}).get("review_pdf", "")).is_file():
+        raise RuntimeError(f"Smoke check did not create the 3×4 review PDF: {summary_file}")
+    for operation in ("cards", "pdf"):
+        result = report.get(operation, {})
+        if result.get("pdf_success") != 3 or result.get("pdf_failed") != 0:
+            raise RuntimeError(f"Smoke {operation}: individual PDF generation failed")
+        if not Path(result.get("combined_pdf", "")).is_file():
+            raise RuntimeError(f"Smoke {operation}: combined PDF is missing")
 
 
 def build(*, skip_tests: bool = False, windows_onedir: bool = False) -> Path:
@@ -192,7 +203,10 @@ def build(*, skip_tests: bool = False, windows_onedir: bool = False) -> Path:
                 if path.exists():
                     bundle.write(path, relative)
     with archive.open("rb") as source:
-        digest = hashlib.file_digest(source, "sha256").hexdigest()
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+        digest = digest.hexdigest()
     archive.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     metadata = {
         "artifact": archive.name, "sha256": digest, "platform": platform.platform(),

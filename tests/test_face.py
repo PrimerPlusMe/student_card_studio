@@ -1,129 +1,91 @@
-"""Stage-two offline model validation against a public-domain NASA portrait."""
-from __future__ import annotations
-
-import json
+"""Offline model checks plus deterministic crop-boundary regressions."""
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-import shutil
-import time
 
-import pytest
+import cv2
+import numpy as np
 from PIL import Image
+import pytest
 
-from student_card.core import create_demo, inspect_inputs, run_job
-from student_card.face import FaceDetector
+from student_card import face
 
-
-ROOT = Path(__file__).resolve().parents[1]
-MODEL = ROOT / "assets" / "face_detection_yunet_2023mar.onnx"
-PORTRAIT = ROOT / "tests" / "fixtures" / "astronaut.png"
+PORTRAIT = Path(__file__).parent / "fixtures" / "astronaut.png"
 
 
-@pytest.fixture
-def astronaut():
-    with Image.open(PORTRAIT) as source:
-        return source.convert("RGB")
+def test_yunet_real_face_and_blank():
+    with Image.open(PORTRAIT) as image:
+        arr = cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2BGR)
+        x, y, w, h = face.detect_face(arr)
+        assert x < 230 < x + w and y < 130 < y + h
+    assert face.detect_face(np.full((320, 320, 3), 255, dtype=np.uint8)) is None
 
 
-def _assert_valid_face(face, image):
-    assert face is not None
-    x, y, width, height = face["box"]
-    nose_x, nose_y = face["nose"]
-    assert width > 0 and height > 0
-    assert 0 <= x < x + width <= image.width + 1
-    assert 0 <= y < y + height <= image.height + 1
-    assert x < nose_x < x + width
-    assert y < nose_y < y + height
+def test_largest_face_selected():
+    with Image.open(PORTRAIT) as portrait:
+        image = Image.new("RGB", (800, 540), "white")
+        image.paste(portrait, (0, 0))
+        image.paste(portrait.resize((256, 256)), (530, 120))
+    box = face.detect_face(cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR))
+    assert box is not None and box[0] < 400
 
 
-def test_yunet_single_real_face_and_nose_landmark(astronaut, record_property):
-    detector = FaceDetector()
-    started = time.perf_counter()
-    face = detector.detect(astronaut)
-    record_property("detect_seconds", round(time.perf_counter() - started, 4))
-    _assert_valid_face(face, astronaut)
-    assert face["count"] == 1
-    x, y, width, height = face["box"]
-    assert x < 230 < x + width and y < 130 < y + height, "Detection should surround the visible astronaut face"
-    assert detector.metadata["backend"] == "yunet"
-    assert len(detector.metadata["sha256"]) == 64
+@pytest.mark.parametrize("box", [None, (0, 0, 100, 100), (290, 385, 90, 110), (0, 0, 900, 1000)])
+def test_crop_keeps_ratio_near_boundaries(monkeypatch, box):
+    monkeypatch.setattr(face, "detect_face", lambda image: box)
+    cropped = face.crop_for_eclass(Image.new("RGB", (301, 403), "red"))
+    assert cropped.width * 13 == cropped.height * 10
+    assert 0 < cropped.width <= 301 and 0 < cropped.height <= 403
 
 
-def test_yunet_two_people_selects_largest_face(astronaut):
-    # The left portrait has twice the linear size of the right portrait.
-    image = Image.new("RGB", (800, 540), "white")
-    image.paste(astronaut, (0, 0))
-    image.paste(astronaut.resize((256, 256)), (530, 120))
-    face = FaceDetector().detect(image)
-    _assert_valid_face(face, image)
-    assert face["count"] == 2
-    assert face["box"][0] < 400, "The larger face on the left must be selected"
+def test_unicode_path_and_exif_orientation(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(face, "detect_face", lambda image: seen.append(image.shape) or None)
+    path = tmp_path / "學生照片.jpg"
+    image = Image.new("RGB", (400, 300), "white")
+    exif = Image.Exif()
+    exif[274] = 6
+    image.save(path, exif=exif)
+    cropped = face.crop_for_eclass(path)
+    assert seen[0][:2] == (400, 300)
+    assert cropped.size == (300, 390)
 
 
-def test_yunet_empty_image_has_no_false_face():
-    assert FaceDetector().detect(Image.new("RGB", (640, 480), "white")) is None
+def test_small_image():
+    assert face.crop_for_eclass(Image.new("RGB", (1, 1))).size == (10, 13)
+    assert face.crop_for_eclass(Image.new("RGB", (3, 4))).size == (10, 13)
 
 
-def test_yunet_model_loads_from_unicode_path(tmp_path, astronaut):
-    folder = tmp_path / "中文模型目录"
-    folder.mkdir()
-    destination = folder / "人脸定位.onnx"
-    shutil.copyfile(MODEL, destination)
-    detector = FaceDetector(str(destination), "yunet")
-    _assert_valid_face(detector.detect(astronaut), astronaut)
+def test_large_inference_maps_coordinates_back(monkeypatch):
+    class Detector:
+        def setInputSize(self, size):
+            assert size == (1200, 600)
+
+        def detect(self, image):
+            assert image.shape[:2] == (600, 1200)
+            return None, np.array([[100, 50, 200, 150]], dtype=float)
+
+    monkeypatch.setattr(face, "get_detector", lambda: Detector())
+    assert face.detect_face(np.zeros((1200, 2400, 3), dtype=np.uint8)) == (200, 100, 400, 300)
 
 
-def test_yunet_missing_and_corrupt_models_fail_explicitly(tmp_path):
-    with pytest.raises(RuntimeError, match="YuNet"):
-        FaceDetector(str(tmp_path / "missing.onnx"), "yunet")
-    model = tmp_path / "broken.onnx"
-    model.write_bytes(b"this is not an ONNX model")
-    with pytest.raises(RuntimeError):
-        FaceDetector(str(model), "yunet")
+def test_green_background_and_tiny_matting():
+    assert face.remove_green_screen_to_white(Image.new("RGB", (80, 100), (0, 255, 0))).getpixel((40, 50)) == (255, 255, 255)
+    assert face.remove_green_screen_to_white(Image.new("RGB", (1, 1), "white")).size == (1, 1)
 
 
-@pytest.mark.parametrize("mode", ["cards", "crop"])
-def test_missing_model_is_caught_before_a_job_starts(tmp_path, mode):
-    config = create_demo(tmp_path / "demo")
-    config.update(output_dir=str(tmp_path / "jobs"), model_path=str(tmp_path / "missing.onnx"))
-    inspection = inspect_inputs(config, mode)
-    assert not inspection["ok"]
-    assert any("YuNet" in error for error in inspection["errors"])
-    assert not Path(config["output_dir"]).exists()
+def test_missing_and_corrupt_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(face, "_detector", None)
+    monkeypatch.setattr(face, "MODEL_PATH", tmp_path / "missing.onnx")
+    with pytest.raises(FileNotFoundError, match="YuNet"):
+        face.get_detector()
+    face.MODEL_PATH.write_bytes(b"not an ONNX model")
+    with pytest.raises(cv2.error):
+        face.get_detector()
 
 
-def test_pdf_only_does_not_require_a_face_model(tmp_path):
-    config = create_demo(tmp_path / "demo")
-    fronts = tmp_path / "fronts"
-    fronts.mkdir()
-    Image.new("RGB", (648, 1050), "white").save(fronts / "00001_ID.png")
-    config.update(output_dir=str(tmp_path / "jobs"), pdf_input_dir=str(fronts), model_path=str(tmp_path / "missing.onnx"))
-    inspection = inspect_inputs(config, "pdf")
-    assert inspection["ok"], inspection
-
-
-def test_haar_remains_an_explicit_compatible_backend(astronaut):
-    detector = FaceDetector(backend="haar")
-    _assert_valid_face(detector.detect(astronaut), astronaut)
-    assert detector.metadata["backend"] == "haar"
-
-
-def test_multi_person_and_no_face_marked_for_manual_review(tmp_path, astronaut):
-    config = create_demo(tmp_path / "demo")
-    config.update(output_dir=str(tmp_path / "jobs"), make_pdf=False)
-    folder = Path(config["photo_path"])
-    astronaut.save(folder / "00001.jpg")
-    Image.new("RGB", (600, 850), "white").save(folder / "00002.jpg")
-    people = Image.new("RGB", (800, 540), "white")
-    people.paste(astronaut, (0, 0))
-    people.paste(astronaut.resize((256, 256)), (530, 120))
-    people.save(folder / "00003.jpg")
-    result = run_job(config)
-    assert result["success"] == 3
-    assert result["review"] == 2
-    manifest = json.loads((Path(result["output_dir"]) / "manifest.json").read_text(encoding="utf-8"))
-    records = {row["student_id"]: row for row in manifest["records"]}
-    assert records["00001"]["status"] == "success"
-    assert records["00002"]["status"] == records["00003"]["status"] == "review"
-    assert "未检测到人脸" in records["00002"]["message"]
-    assert "2" in records["00003"]["message"]
-    assert manifest["summary"]["detector"]["backend"] == "yunet"
+def test_parallel_detector_calls():
+    with Image.open(PORTRAIT) as image:
+        arr = cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2BGR)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        boxes = list(pool.map(face.detect_face, [arr, arr]))
+    assert boxes[0] == boxes[1]

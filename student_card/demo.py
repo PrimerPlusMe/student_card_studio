@@ -36,35 +36,33 @@ def _portrait(path: Path, accent: str, seed: int) -> None:
 
 
 def create_demo(destination: str | Path) -> dict:
-    """Write demonstration assets and return a complete application config.
+    """Write fictional assets and return batch_generate_cards keyword arguments.
 
     All students and portraits are invented. System fonts are referenced, never
     copied into a redistributable asset directory.
     """
-    from .core import default_config
-
     root = Path(destination).resolve()
     root.mkdir(parents=True, exist_ok=True)
     photos = root / "photos"
     photos.mkdir(exist_ok=True)
-    template = Image.new("RGB", (648, 1050), "white")
+    template = Image.new("RGB", (649, 1033), "white")
     draw = ImageDraw.Draw(template)
-    draw.rectangle((0, 0, 648, 216), fill="#173f63")
-    draw.text((324, 76), "DEMO SCHOOL", anchor="mm", font=_font(47), fill="white")
-    draw.text((324, 146), "STUDENT CARD", anchor="mm", font=_font(29), fill="#cfe5ef")
-    draw.text((324, 265), "SYNTHETIC DEMONSTRATION", anchor="mm", font=_font(22), fill="#617086")
-    draw.ellipse((150, 342, 500, 692), fill="#e7edf5", outline="#c6d4e3", width=3)
-    draw.rectangle((0, 1024, 648, 1050), fill="#173f63")
+    draw.rectangle((0, 0, 649, 290), fill="#173f63")
+    draw.text((324, 100), "DEMO SCHOOL", anchor="mm", font=_font(44), fill="white")
+    draw.text((324, 180), "STUDENT CARD", anchor="mm", font=_font(32), fill="white")
+    draw.text((324, 245), "FICTIONAL DATA ONLY", anchor="mm", font=_font(22), fill="white")
+    draw.ellipse((155, 347, 494, 686), fill="#ed00cd")
+    draw.rectangle((0, 1013, 649, 1033), fill="#173f63")
     template.save(root / "template.png")
     mask = Image.new("L", template.size, 0)
     ImageDraw.Draw(mask).ellipse((155, 347, 494, 686), fill=255)
-    mask.save(root / "mask.png")
-    back = Image.new("RGB", template.size, "#173f63")
-    draw = ImageDraw.Draw(back)
-    draw.text((324, 220), "DEMO SCHOOL", anchor="mm", font=_font(43), fill="white")
-    draw.text((324, 310), "STUDENT CARD / BACK", anchor="mm", font=_font(27), fill="#cfe5ef")
-    draw.multiline_text((65, 460), "Demonstration only.\nAll student records are fictional.\n\nIf found, please return to\nthe school office.", spacing=23, font=_font(24), fill="white")
-    back.save(root / "back.png")
+    mask.save(root / "psd_mask.png")
+    with Image.new("RGB", template.size, "#173f63") as back:
+        back_draw = ImageDraw.Draw(back)
+        back_draw.text((324, 180), "DEMO SCHOOL", anchor="mm", font=_font(42), fill="white")
+        back_draw.text((324, 510), "CARD BACK", anchor="mm", font=_font(42), fill="white")
+        back_draw.text((324, 700), "FICTIONAL DATA ONLY", anchor="mm", font=_font(26), fill="white")
+        back.save(root / "back2026.png")
     rows = (
         ("00001", "ALEX CHAN", "陳同學", "#3987ad"),
         ("00002", "A VERY LONG ENGLISH STUDENT NAME FOR LAYOUT CHECK", "/", "#497a61"),
@@ -73,9 +71,9 @@ def create_demo(destination: str | Path) -> dict:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Students"
-    sheet.append(["學號", "Name", "姓名"])
+    sheet.append(["學號", "Name", "姓名", "Class", "ClassNumber"])
     for index, (student_id, english, chinese, accent) in enumerate(rows, 1):
-        sheet.append([student_id, english, chinese])
+        sheet.append([student_id, english, chinese, "1A", index])
         sheet.cell(index + 1, 1).number_format = "@"
         _portrait(photos / f"{student_id}.jpg", accent, index)
     sheet.column_dimensions["A"].width = 18
@@ -84,21 +82,18 @@ def create_demo(destination: str | Path) -> dict:
     workbook.save(root / "students.xlsx")
     (root / "演示资料说明.txt").write_text(
         "本目录的学生记录与人像均为虚构演示资料，不含真实学生信息。\n"
-        "演示人像为程序绘制，可能不能被人脸检测模型识别；此时会标记为需要复核。\n"
-        "实际使用请替换为自己的底图、遮罩、背面、名单和按学号命名的照片。\n"
+        "演示人像为程序绘制，可能不能被模型识别；此时使用中央裁剪，请人工检查。\n"
+        "实际使用请替换为自己的原版模板、原厂遮罩、名单和按学号命名的照片。\n"
         "学号请在 Excel 中使用文本，或使用明确的前导零数字格式。\n"
         "字体引用操作系统已有字体；本目录没有复制系统字体文件。\n",
         encoding="utf-8",
     )
-    config = default_config()
-    config.update(
+    return dict(
         excel_path=str(root / "students.xlsx"),
-        photo_path=str(photos),
-        template_path=str(root / "template.png"),
-        mask_path=str(root / "mask.png"),
-        back_path=str(root / "back.png"),
+        photos_dir=str(photos),
+        front_template=str(root / "template.png"),
+        mask_path=str(root / "psd_mask.png"),
         output_dir=str(root / "output"),
-        reference_width=648,
-        reference_height=1050,
+        export_3x4_pdf=True,
+        use_smart_bg=False,
     )
-    return config

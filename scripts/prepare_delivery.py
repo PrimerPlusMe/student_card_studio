@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from datetime import date
 from pathlib import Path
 import shutil
 import zipfile
@@ -14,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def sha256(path):
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+        return digest.hexdigest()
 
 
 def deliver(destination: Path, notebook: Path | None = None):
@@ -24,6 +28,8 @@ def deliver(destination: Path, notebook: Path | None = None):
     if report.get("passed") is not True:
         raise RuntimeError("The executable has not passed independent release validation")
     executable = ROOT / "dist/StudentCardStudio.exe"
+    if report.get("exe_sha256") != sha256(executable):
+        raise RuntimeError("Run verify_release.py --executable on this exact executable before delivery")
     exe = destination / executable.name
     shutil.copy2(executable, exe)
     for source, name in (
@@ -33,23 +39,25 @@ def deliver(destination: Path, notebook: Path | None = None):
         (ROOT / "validation/windows-exe/release-verification.json", "Windows验收结果.json"),
     ):
         shutil.copy2(source, destination / name)
-    quickstart = """学生证工作室 v1.0.0 · Windows x64
-交付日期：2026-11-01
+    quickstart = f"""學生證工作室 · Windows x64
+交付日期：{date.today().isoformat()}
 
-1. 双击 StudentCardStudio.exe，无需安装 Python。
-2. 首次运行可点击“载入演示资料”→“检查资料”→选择学生→“预览”→“开始生成学生证”。
-3. 实际制作请选择自己的 Excel、按学号命名的照片、正面底图、遮罩及背面；字体可自动使用本机字体或自行选择。
-4. 可分别制作学生证、合并正反面 PDF、裁剪 eClass 10:13 照片。照片支持文件夹或 ZIP。
-5. 任务结束后点“打开输出”，查看图片、PDF、processing_report.csv、manifest.json 和 results.zip。
+1. 雙擊 StudentCardStudio.exe，無需另裝 Python。
+2. 選擇 .xlsx 名冊、相片目錄、649×1033 原版模板、psd_mask.png 及輸出目錄。字體可選原 ARLRDBD.TTF/BiauKai.ttf/Arial.ttf。
+3. 視需要勾選綠幕退底及 3×4 檢閱 PDF，開始製作。
+4. 每次建立獨立輸出目錄，內含 single_cards/、cropped_photos/，及選擇生成的 student_cards_review_3x4.pdf。
+5. 第二分頁可獨立裁剪 10:13 eClass 相片。相片採資料夾第一層 JPG/PNG，不接受 ZIP。
+6. 勾選正背面 PDF 並選擇背面，可產生每人兩頁 PDF 及 All_Students_Combined.pdf；第三分頁可從 single_cards/ 單獨產生 PDF。預設頁幅 54×85.6 mm，可調整。
+7. 所有路徑、選項及尺寸自動保存，關閉再開啟仍可還原。這與已移除的 A4 多張雙面拼版不同。
 
-初始参考画布 648×1050、PDF 成品 54×85.6 mm 均可调整，不代表已确认学校原版规格。
-原目录只有 Notebook，学校真实底图、遮罩、字体、名单和照片未包含在此应用中；请先预览后批量制作。
+名冊欄位支援 StudentID/學號/ID、Name/姓名、Class/班別、ClassNumber/班號。
+學號建議保存為文字；純零數字格式也會保留顯示位數。公式欄位請先轉為值。
+先以少量資料檢查模板排版、人像裁剪及中文顯示，再批量製作。
 
-验收：第一阶段 26 项通过，第二阶段最终 42 项通过；打包版在移除 Python 路径、其他工作目录下独立运行并验收通过。
-Mac：源码已附 Apple 芯片与 Intel 云端构建配置，按用户要求稍后继续；本次没有生成或验证 Mac .app。
+本次可執行檔已核對獨立驗證報告的 SHA256。實際檢查項目見 Windows验收结果.json。
+檢閱 PDF 為單面 A4，3 欄 4 列、最多 12 張，並非實尺寸證件印刷檔。
 
-StudentCardStudio-source.zip 包含源码、依赖清单、测试、内置模型、中文说明和双端构建脚本。
-其中 docs/original/ 中的原 Notebook 副本已移除执行输出，原始文件未被改动。
+StudentCardStudio-source.zip 包含原始碼、依賴、測試、模型、說明及原生構建腳本。
 """
     (destination / "先读我.txt").write_text(quickstart, encoding="utf-8-sig")
     archive = destination / "StudentCardStudio-windows-x64.zip"

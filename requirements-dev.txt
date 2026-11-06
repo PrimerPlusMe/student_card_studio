@@ -1,14 +1,4 @@
 -r requirements.txt
-PyInstaller==6.22.3
-pyinstaller-hooks-contrib==2026.9
-pytest==9.2.0
-zxing-cpp==3.1.1
-altgraph==0.17.5
-macholib==1.16.4; sys_platform == "darwin"
-pefile==2024.8.26; sys_platform == "win32"
-pywin32-ctypes==0.2.3; sys_platform == "win32"
-setuptools==84.2.1
-colorama==0.4.6; sys_platform == "win32"
-iniconfig==2.3.1
-pluggy==1.7.0
-Pygments==2.21.0
+PyInstaller>=6,<7
+pytest>=8,<9
+zxing-cpp>=2,<3
